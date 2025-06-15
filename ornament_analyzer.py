@@ -127,14 +127,14 @@ def generate_prompt(detected_ornaments: List[dict]) -> str:
         count = item["count"]
         
         # Check singular meanings
-        singular_info = singular_df[singular_df['ornament'].str.lower() == ornament.lower()]
+        singular_info = singular_df[singular_df['name'].str.lower() == ornament.lower()]
         if not singular_info.empty:
-            prompt += f"- {ornament} (appears {count} times): {singular_info.iloc[0]['meaning']}\n"
+            prompt += f"- {ornament} (appears {count} times): {singular_info.iloc[0]['en']}\n"
         
         # Check combined meanings
-        combined_info = combined_df[combined_df['ornaments'].str.lower().str.contains(ornament.lower())]
+        combined_info = combined_df[combined_df['Combination Name'].str.lower().str.contains(ornament.lower())]
         if not combined_info.empty:
-            prompt += f"- Combined with other ornaments: {combined_info.iloc[0]['meaning']}\n"
+            prompt += f"- Combined with other ornaments: {combined_info.iloc[0]['Combined Meaning (en)']}\n"
     
     prompt += "\nProvide a concise analysis of these ornaments' cultural significance and meaning in 3 sentences or less."
     return prompt
