@@ -14,6 +14,8 @@ import numpy as np
 import io
 from PIL import Image
 from dotenv import load_dotenv
+import gc
+import torch
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,19 +26,35 @@ app = FastAPI(title="Ornament Analysis Service")
 # Set up templates
 templates = Jinja2Templates(directory="templates")
 
+# Global model instance
+model = None
+
+def load_model():
+    global model
+    if model is None:
+        try:
+            # Clear CUDA cache if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Load the model from Hugging Face
+            model = YOLO('https://huggingface.co/crowded-mind/Nomadix/resolve/main/best.pt')
+            
+            # Force garbage collection
+            gc.collect()
+            
+            print("Model loaded successfully")
+        except Exception as e:
+            print(f"Error loading YOLOv8 model: {e}")
+            raise
+    return model
+
 # Load CSV files into DataFrames
 try:
     singular_df = pd.read_csv('singular.csv')
     combined_df = pd.read_csv('all_combined_ornaments.csv')
 except FileNotFoundError as e:
     print(f"Error loading CSV files: {e}")
-    raise
-
-# Load YOLOv8 model from Hugging Face
-try:
-    model = YOLO('https://huggingface.co/crowded-mind/Nomadix/resolve/main/best.pt')
-except Exception as e:
-    print(f"Error loading YOLOv8 model: {e}")
     raise
 
 # Grok API configuration
@@ -48,30 +66,42 @@ async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 def process_image(image_bytes: bytes):
+    # Get the global model instance
+    global_model = load_model()
+    
     # Convert bytes to numpy array
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
-    # Run YOLOv8 detection
-    results = model(img)
-    
-    # Extract detected ornaments and count occurrences
-    ornament_counts = {}
-    for result in results:
-        boxes = result.boxes
-        for box in boxes:
-            # Get class name and confidence
-            class_id = int(box.cls[0])
-            confidence = float(box.conf[0])
-            class_name = result.names[class_id]
-            
-            if confidence > 0.5:  # Confidence threshold
-                ornament_counts[class_name] = ornament_counts.get(class_name, 0) + 1
-    
-    # Convert to list of unique ornaments
-    detected_ornaments = list(ornament_counts.keys())
-    
-    return detected_ornaments, ornament_counts
+    try:
+        # Run YOLOv8 detection
+        results = global_model(img)
+        
+        # Extract detected ornaments and count occurrences
+        ornament_counts = {}
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                # Get class name and confidence
+                class_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                class_name = result.names[class_id]
+                
+                if confidence > 0.5:  # Confidence threshold
+                    ornament_counts[class_name] = ornament_counts.get(class_name, 0) + 1
+        
+        # Convert to list of unique ornaments
+        detected_ornaments = list(ornament_counts.keys())
+        
+        return detected_ornaments, ornament_counts
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+    finally:
+        # Clear memory after processing
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
 
 def generate_prompt(ornaments: List[str]) -> str:
     # Convert ornaments to lowercase for case-insensitive matching
@@ -146,5 +176,7 @@ async def analyze_image(file: UploadFile = File(...)):
     }
 
 if __name__ == "__main__":
+    # Pre-load the model when starting the server
+    load_model()
     print("Starting server at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000) 
