@@ -17,8 +17,8 @@ from dotenv import load_dotenv
 import gc
 import torch
 
-# Load environment variables from .env file
-load_dotenv()
+# Try to load environment variables from .env file, but don't fail if it doesn't exist
+load_dotenv(override=True)
 
 # Initialize FastAPI app
 app = FastAPI(title="Ornament Analysis Service")
@@ -59,6 +59,9 @@ except FileNotFoundError as e:
 
 # Grok API configuration
 GROK_API_KEY = os.getenv("GROK_API_KEY")
+if not GROK_API_KEY:
+    print("Warning: GROK_API_KEY not found in environment variables")
+
 GROK_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 @app.get("/", response_class=HTMLResponse)
@@ -132,6 +135,9 @@ def generate_prompt(ornaments: List[str]) -> str:
     return prompt
 
 def get_grok_response(prompt: str) -> str:
+    if not GROK_API_KEY:
+        raise HTTPException(status_code=500, detail="GROK_API_KEY not configured")
+        
     headers = {
         "Authorization": f"Bearer {GROK_API_KEY}",
         "Content-Type": "application/json"
@@ -152,28 +158,33 @@ def get_grok_response(prompt: str) -> str:
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content']
     except Exception as e:
+        print(f"Error calling Grok API: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calling Grok API: {str(e)}")
 
 @app.post("/analyze-image")
 async def analyze_image(file: UploadFile = File(...)):
-    # Read image file
-    contents = await file.read()
-    
-    # Process image with YOLOv8
-    detected_ornaments, ornament_counts = process_image(contents)
-    
-    if not detected_ornaments:
-        return {"response": "No ornaments detected in the image."}
-    
-    # Generate prompt and get Grok response
-    prompt = generate_prompt(detected_ornaments)
-    response = get_grok_response(prompt)
-    
-    return {
-        "detected_ornaments": detected_ornaments,
-        "ornament_counts": ornament_counts,
-        "response": response
-    }
+    try:
+        # Read image file
+        contents = await file.read()
+        
+        # Process image with YOLOv8
+        detected_ornaments, ornament_counts = process_image(contents)
+        
+        if not detected_ornaments:
+            return {"response": "No ornaments detected in the image."}
+        
+        # Generate prompt and get Grok response
+        prompt = generate_prompt(detected_ornaments)
+        response = get_grok_response(prompt)
+        
+        return {
+            "detected_ornaments": detected_ornaments,
+            "ornament_counts": ornament_counts,
+            "response": response
+        }
+    except Exception as e:
+        print(f"Error in analyze_image: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     # Pre-load the model when starting the server
