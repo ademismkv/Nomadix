@@ -14,6 +14,11 @@ import numpy as np
 import io
 from PIL import Image
 from huggingface_hub import hf_hub_download
+from dotenv import load_dotenv
+import torch
+
+# Load environment variables
+load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(title="Ornament Analysis Service")
@@ -39,14 +44,18 @@ try:
     )
     print(f"Model downloaded to: {model_path}")
     
-    # Load the downloaded model
+    # Load the model with custom settings
     model = YOLO(model_path)
+    model.conf = 0.4  # Set confidence threshold
+    model.iou = 0.35  # Set IoU threshold
 except Exception as e:
     print(f"Error loading YOLOv8 model: {e}")
     raise
 
 # Groq API configuration
-GROQ_API_KEY = "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"
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY environment variable is not set")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 @app.get("/", response_class=HTMLResponse)
