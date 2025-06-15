@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import requests
 import os
@@ -13,13 +14,50 @@ import cv2
 import numpy as np
 import io
 from PIL import Image
-from huggingface_hub import hf_hub_download
+from dotenv import load_dotenv
+import gc
+import torch
+
+# Try to load environment variables from .env file, but don't fail if it doesn't exist
+load_dotenv(override=True)
 
 # Initialize FastAPI app
 app = FastAPI(title="Ornament Analysis Service")
 
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Set up templates
 templates = Jinja2Templates(directory="templates")
+
+# Global model instance
+model = None
+
+def load_model():
+    global model
+    if model is None:
+        try:
+            # Clear CUDA cache if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Load the model from Hugging Face
+            model = YOLO('https://huggingface.co/crowded-mind/Nomadix/resolve/main/best.pt')
+            
+            # Force garbage collection
+            gc.collect()
+            
+            print("Model loaded successfully")
+        except Exception as e:
+            print(f"Error loading YOLOv8 model: {e}")
+            raise
+    return model
 
 # Load CSV files into DataFrames
 try:
@@ -29,55 +67,54 @@ except FileNotFoundError as e:
     print(f"Error loading CSV files: {e}")
     raise
 
-# Load YOLOv8 model
-try:
-    # Download model from Hugging Face
-    model_path = hf_hub_download(
-        repo_id="crowded-mind/Nomadix",
-        filename="best.pt",
-        local_dir="./models"
-    )
-    print(f"Model downloaded to: {model_path}")
-    
-    # Load the downloaded model
-    model = YOLO(model_path)
-except Exception as e:
-    print(f"Error loading YOLOv8 model: {e}")
-    raise
+# Grok API configuration
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+if not GROK_API_KEY:
+    print("Warning: GROK_API_KEY not found in environment variables")
 
-# Groq API configuration
-GROQ_API_KEY = "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"
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROK_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 def process_image(image_bytes: bytes):
+    # Get the global model instance
+    global_model = load_model()
+    
     # Convert bytes to numpy array
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
-    # Run YOLOv8 detection
-    results = model(img)
-    
-    # Extract detected ornaments and count occurrences
-    ornament_counts = {}
-    for result in results:
-        boxes = result.boxes
-        for box in boxes:
-            # Get class name and confidence
-            class_id = int(box.cls[0])
-            confidence = float(box.conf[0])
-            class_name = result.names[class_id]
-            
-            if confidence > 0.5:  # Confidence threshold
-                ornament_counts[class_name] = ornament_counts.get(class_name, 0) + 1
-    
-    # Convert to list of unique ornaments
-    detected_ornaments = list(ornament_counts.keys())
-    
-    return detected_ornaments, ornament_counts
+    try:
+        # Run YOLOv8 detection
+        results = global_model(img)
+        
+        # Extract detected ornaments and count occurrences
+        ornament_counts = {}
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                # Get class name and confidence
+                class_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                class_name = result.names[class_id]
+                
+                if confidence > 0.5:  # Confidence threshold
+                    ornament_counts[class_name] = ornament_counts.get(class_name, 0) + 1
+        
+        # Convert to list of unique ornaments
+        detected_ornaments = list(ornament_counts.keys())
+        
+        return detected_ornaments, ornament_counts
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+    finally:
+        # Clear memory after processing
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
 
 def generate_prompt(ornaments: List[str]) -> str:
     # Convert ornaments to lowercase for case-insensitive matching
@@ -107,9 +144,13 @@ def generate_prompt(ornaments: List[str]) -> str:
     prompt += "\nPlease provide a concise, straightforward explanation of the cultural significance and meaning of these ornaments, combining both individual and combined meanings where applicable. Limit your response to a maximum of 3 sentences."
     return prompt
 
-def get_groq_response(prompt: str) -> str:
+def get_grok_response(prompt: str) -> str:
+    if not GROK_API_KEY:
+        print("Error: GROK_API_KEY is not set")
+        raise HTTPException(status_code=500, detail="GROK_API_KEY not configured")
+        
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {GROK_API_KEY}",
         "Content-Type": "application/json"
     }
     
@@ -124,33 +165,64 @@ def get_groq_response(prompt: str) -> str:
     }
     
     try:
-        response = requests.post(GROQ_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        return response.json()['choices'][0]['message']['content']
+        print(f"Making request to Grok API with prompt: {prompt[:100]}...")
+        response = requests.post(GROK_API_URL, headers=headers, json=data)
+        print(f"Grok API response status: {response.status_code}")
+        print(f"Grok API response content: {response.text[:200]}...")
+        
+        if response.status_code != 200:
+            print(f"Error response from Grok API: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=f"Grok API error: {response.text}")
+            
+        response_data = response.json()
+        if 'choices' not in response_data or not response_data['choices']:
+            print(f"Unexpected response format: {response_data}")
+            raise HTTPException(status_code=500, detail="Unexpected response format from Grok API")
+            
+        return response_data['choices'][0]['message']['content']
+    except requests.exceptions.RequestException as e:
+        print(f"Network error calling Grok API: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Network error calling Grok API: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calling Groq API: {str(e)}")
+        print(f"Unexpected error calling Grok API: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error calling Grok API: {str(e)}")
 
 @app.post("/analyze-image")
 async def analyze_image(file: UploadFile = File(...)):
-    # Read image file
-    contents = await file.read()
-    
-    # Process image with YOLOv8
-    detected_ornaments, ornament_counts = process_image(contents)
-    
-    if not detected_ornaments:
-        return {"response": "No ornaments detected in the image."}
-    
-    # Generate prompt and get LLaMA response
-    prompt = generate_prompt(detected_ornaments)
-    response = get_groq_response(prompt)
-    
-    return {
-        "detected_ornaments": detected_ornaments,
-        "ornament_counts": ornament_counts,
-        "response": response
-    }
+    try:
+        # Read image file
+        contents = await file.read()
+        print("Image file read successfully")
+        
+        # Process image with YOLOv8
+        detected_ornaments, ornament_counts = process_image(contents)
+        print(f"Detected ornaments: {detected_ornaments}")
+        print(f"Ornament counts: {ornament_counts}")
+        
+        if not detected_ornaments:
+            return {"response": "No ornaments detected in the image."}
+        
+        # Generate prompt and get Grok response
+        prompt = generate_prompt(detected_ornaments)
+        print(f"Generated prompt: {prompt[:100]}...")
+        
+        response = get_grok_response(prompt)
+        print(f"Got response from Grok API: {response[:100]}...")
+        
+        return {
+            "detected_ornaments": detected_ornaments,
+            "ornament_counts": ornament_counts,
+            "response": response
+        }
+    except Exception as e:
+        print(f"Error in analyze_image: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
+    # Pre-load the model when starting the server
+    load_model()
     print("Starting server at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000) 
