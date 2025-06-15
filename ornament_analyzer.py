@@ -136,6 +136,7 @@ def generate_prompt(ornaments: List[str]) -> str:
 
 def get_grok_response(prompt: str) -> str:
     if not GROK_API_KEY:
+        print("Error: GROK_API_KEY is not set")
         raise HTTPException(status_code=500, detail="GROK_API_KEY not configured")
         
     headers = {
@@ -154,11 +155,26 @@ def get_grok_response(prompt: str) -> str:
     }
     
     try:
+        print(f"Making request to Grok API with prompt: {prompt[:100]}...")
         response = requests.post(GROK_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        return response.json()['choices'][0]['message']['content']
+        print(f"Grok API response status: {response.status_code}")
+        print(f"Grok API response content: {response.text[:200]}...")
+        
+        if response.status_code != 200:
+            print(f"Error response from Grok API: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=f"Grok API error: {response.text}")
+            
+        response_data = response.json()
+        if 'choices' not in response_data or not response_data['choices']:
+            print(f"Unexpected response format: {response_data}")
+            raise HTTPException(status_code=500, detail="Unexpected response format from Grok API")
+            
+        return response_data['choices'][0]['message']['content']
+    except requests.exceptions.RequestException as e:
+        print(f"Network error calling Grok API: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Network error calling Grok API: {str(e)}")
     except Exception as e:
-        print(f"Error calling Grok API: {str(e)}")
+        print(f"Unexpected error calling Grok API: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calling Grok API: {str(e)}")
 
 @app.post("/analyze-image")
@@ -166,16 +182,22 @@ async def analyze_image(file: UploadFile = File(...)):
     try:
         # Read image file
         contents = await file.read()
+        print("Image file read successfully")
         
         # Process image with YOLOv8
         detected_ornaments, ornament_counts = process_image(contents)
+        print(f"Detected ornaments: {detected_ornaments}")
+        print(f"Ornament counts: {ornament_counts}")
         
         if not detected_ornaments:
             return {"response": "No ornaments detected in the image."}
         
         # Generate prompt and get Grok response
         prompt = generate_prompt(detected_ornaments)
+        print(f"Generated prompt: {prompt[:100]}...")
+        
         response = get_grok_response(prompt)
+        print(f"Got response from Grok API: {response[:100]}...")
         
         return {
             "detected_ornaments": detected_ornaments,
@@ -184,6 +206,9 @@ async def analyze_image(file: UploadFile = File(...)):
         }
     except Exception as e:
         print(f"Error in analyze_image: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
