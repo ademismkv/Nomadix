@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import requests
 import os
@@ -26,6 +27,15 @@ load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(title="Ornament Analysis Service")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Set up templates
 templates = Jinja2Templates(directory="templates")
