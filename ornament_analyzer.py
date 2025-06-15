@@ -87,29 +87,36 @@ class ContributionRequest(BaseModel):
 
 def process_image(image_data: bytes) -> List[dict]:
     """Process image and return detected ornaments with their counts."""
-    # Convert bytes to numpy array
-    nparr = np.frombuffer(image_data, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    
-    # Run YOLOv8 detection
-    results = model(img)
-    
-    # Process results
-    detected_ornaments = {}
-    for result in results:
-        boxes = result.boxes
-        for box in boxes:
-            class_id = int(box.cls[0])
-            class_name = result.names[class_id]
-            confidence = float(box.conf[0])
-            
-            if confidence >= model.conf:
-                if class_name in detected_ornaments:
-                    detected_ornaments[class_name] += 1
-                else:
-                    detected_ornaments[class_name] = 1
-    
-    return [{"ornament": k, "count": v} for k, v in detected_ornaments.items()]
+    try:
+        # Convert bytes to numpy array
+        nparr = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise ValueError("Failed to decode image")
+        
+        # Run YOLOv8 detection
+        results = model(img)
+        
+        # Process results
+        detected_ornaments = {}
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                class_id = int(box.cls[0])
+                class_name = result.names[class_id]
+                confidence = float(box.conf[0])
+                
+                if confidence >= model.conf:
+                    if class_name in detected_ornaments:
+                        detected_ornaments[class_name] += 1
+                    else:
+                        detected_ornaments[class_name] = 1
+        
+        return [{"ornament": k, "count": v} for k, v in detected_ornaments.items()]
+    except Exception as e:
+        print(f"Error in process_image: {str(e)}")  # Add logging
+        raise ValueError(f"Error processing image: {str(e)}")
 
 def generate_prompt(detected_ornaments: List[dict]) -> str:
     """Generate prompt for LLaMA based on detected ornaments."""
@@ -134,23 +141,30 @@ def generate_prompt(detected_ornaments: List[dict]) -> str:
 
 def get_groq_response(prompt: str) -> str:
     """Get response from Groq API."""
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "model": "llama2-70b-4096",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 150
-    }
-    
-    response = requests.post(GROQ_API_URL, headers=headers, json=data)
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
-    else:
-        raise HTTPException(status_code=500, detail="Failed to get response from Groq API")
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "llama2-70b-4096",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 150
+        }
+        
+        response = requests.post(GROQ_API_URL, headers=headers, json=data)
+        response.raise_for_status()  # Raise exception for non-200 status codes
+        
+        result = response.json()
+        if "choices" not in result or not result["choices"]:
+            raise ValueError("Invalid response format from Groq API")
+            
+        return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"Error in get_groq_response: {str(e)}")  # Add logging
+        raise HTTPException(status_code=500, detail=f"Failed to get response from Groq API: {str(e)}")
 
 @app.post("/analyze")
 async def analyze_image(request: ImageAnalysisRequest):
@@ -164,14 +178,23 @@ async def analyze_image(request: ImageAnalysisRequest):
             image_data = response.content
         elif request.image_base64:
             try:
+                # Remove data URL prefix if present
+                if ',' in request.image_base64:
+                    request.image_base64 = request.image_base64.split(',')[1]
                 image_data = base64.b64decode(request.image_base64)
-            except:
-                raise HTTPException(status_code=400, detail="Invalid base64 image data")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid base64 image data: {str(e)}")
         else:
             raise HTTPException(status_code=400, detail="Either image_url or image_base64 must be provided")
 
         # Process image
         detected_ornaments = process_image(image_data)
+        
+        if not detected_ornaments:
+            return {
+                "detected_ornaments": [],
+                "analysis": "No ornaments detected in the image."
+            }
         
         # Generate analysis
         prompt = generate_prompt(detected_ornaments)
@@ -179,10 +202,12 @@ async def analyze_image(request: ImageAnalysisRequest):
         
         return {
             "detected_ornaments": detected_ornaments,
-            "analysis": analysis
+            "analysis": analysis,
+            "status": "success"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in analyze_image: {str(e)}")  # Add logging
+        raise HTTPException(status_code=500, detail=f"Error analyzing image: {str(e)}")
 
 @app.post("/contribute")
 async def contribute_data(contribution: ContributionRequest):
