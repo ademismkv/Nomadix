@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,6 +17,12 @@ from PIL import Image
 from dotenv import load_dotenv
 import gc
 import torch
+import base64
+import datetime
+import json
+import boto3
+from botocore.exceptions import ClientError
+from supabase import create_client, Client
 
 # Try to load environment variables from .env file, but don't fail if it doesn't exist
 load_dotenv(override=True)
@@ -38,6 +44,22 @@ templates = Jinja2Templates(directory="templates")
 
 # Global model instance
 model = None
+
+# Initialize S3 client
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+    region_name=os.getenv('AWS_REGION', 'us-east-1')
+)
+
+S3_BUCKET = os.getenv('AWS_S3_BUCKET')
+
+# Initialize Supabase client
+supabase: Client = create_client(
+    os.getenv('SUPABASE_URL'),
+    os.getenv('SUPABASE_KEY')
+)
 
 def load_model():
     global model
@@ -92,6 +114,8 @@ def process_image(image_bytes: bytes):
         
         # Extract detected ornaments and count occurrences
         ornament_counts = {}
+        unique_ornaments = {}  # Dictionary to store unique ornaments by class
+        
         for result in results:
             boxes = result.boxes
             for box in boxes:
@@ -102,11 +126,30 @@ def process_image(image_bytes: bytes):
                 
                 if confidence > 0.5:  # Confidence threshold
                     ornament_counts[class_name] = ornament_counts.get(class_name, 0) + 1
+                    
+                    # Only store the highest confidence detection for each class
+                    if class_name not in unique_ornaments or confidence > unique_ornaments[class_name]['confidence']:
+                        # Get bounding box coordinates
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        # Crop the ornament
+                        cropped = img[y1:y2, x1:x2]
+                        
+                        # Convert to base64
+                        _, buffer = cv2.imencode('.jpg', cropped)
+                        cropped_base64 = base64.b64encode(buffer).decode('utf-8')
+                        
+                        unique_ornaments[class_name] = {
+                            'class': class_name,
+                            'image': cropped_base64,
+                            'confidence': confidence
+                        }
         
         # Convert to list of unique ornaments
         detected_ornaments = list(ornament_counts.keys())
+        cropped_ornaments = list(unique_ornaments.values())
         
-        return detected_ornaments, ornament_counts
+        return detected_ornaments, ornament_counts, cropped_ornaments
     except Exception as e:
         print(f"Error processing image: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
@@ -195,7 +238,7 @@ async def analyze_image(file: UploadFile = File(...)):
         print("Image file read successfully")
         
         # Process image with YOLOv8
-        detected_ornaments, ornament_counts = process_image(contents)
+        detected_ornaments, ornament_counts, cropped_ornaments = process_image(contents)
         print(f"Detected ornaments: {detected_ornaments}")
         print(f"Ornament counts: {ornament_counts}")
         
@@ -212,13 +255,78 @@ async def analyze_image(file: UploadFile = File(...)):
         return {
             "detected_ornaments": detected_ornaments,
             "ornament_counts": ornament_counts,
-            "response": response
+            "response": response,
+            "cropped_ornaments": cropped_ornaments
         }
     except Exception as e:
         print(f"Error in analyze_image: {str(e)}")
         print(f"Error type: {type(e)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/contribute")
+async def contribute_ornament(
+    file: UploadFile = File(...),
+    label: str = Form(...),
+    description: str = Form(None)
+):
+    try:
+        if not all([os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY')]):
+            raise HTTPException(
+                status_code=500,
+                detail="Supabase credentials not configured"
+            )
+
+        # Read image file
+        contents = await file.read()
+        
+        # Generate a unique filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"contributions/{timestamp}_{label.replace(' ', '_')}.jpg"
+        
+        # Convert image to base64 for Supabase storage
+        image_base64 = base64.b64encode(contents).decode('utf-8')
+        
+        # Upload to Supabase Storage
+        try:
+            # Upload the image to Supabase Storage
+            storage_response = supabase.storage.from_('ornaments').upload(
+                filename,
+                contents,
+                {"content-type": "image/jpeg"}
+            )
+            
+            # Get the public URL
+            public_url = supabase.storage.from_('ornaments').get_public_url(filename)
+            
+            # Save metadata to Supabase Database
+            metadata = {
+                'filename': filename,
+                'label': label,
+                'description': description,
+                'timestamp': timestamp,
+                'url': public_url
+            }
+            
+            # Insert into contributions table
+            db_response = supabase.table('contributions').insert(metadata).execute()
+            
+            return {
+                "status": "success",
+                "message": "Thank you for your contribution!",
+                "contribution": metadata
+            }
+            
+        except Exception as e:
+            print(f"Error uploading to Supabase: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Error uploading contribution"
+            )
+            
+    except Exception as e:
+        print(f"Error in contribute_ornament: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
