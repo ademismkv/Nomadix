@@ -81,7 +81,7 @@ REACT_APP_API_URL=https://nomadix-production.up.railway.app
 
 1. Start the backend:
 ```bash
-uvicorn ornament_analyzer:app --reload
+uvicorn app.main:app --reload
 ```
 
 2. Start the frontend:
@@ -127,14 +127,35 @@ Analyzes an image for Kyrgyz ornaments.
 
 ```
 nomadix/
-├── ornament_analyzer.py    # FastAPI application
-├── requirements.txt        # Python dependencies
-├── Dockerfile             # Docker configuration
-├── src/                   # Frontend source code
-│   ├── components/        # React components
-│   ├── config/           # Configuration files
-│   └── contexts/         # React contexts
-└── templates/            # HTML templates
+├── app/
+│   ├── main.py
+│   ├── api/
+│   │   └── endpoints/
+│   │       ├── analyze.py
+│   │       └── contribute.py
+│   ├── core/
+│   │   ├── config.py
+│   │   └── model.py
+│   ├── services/
+│   │   ├── grok.py
+│   │   └── ornaments.py
+│   ├── schemas/
+│   │   └── analyze.py
+│   ├── utils/
+│   │   └── image.py
+│   └── templates/
+│       └── index.html
+├── static/
+│   ├── css/
+│   ├── images/
+│   └── js/
+├── data/
+│   ├── singular.csv
+│   └── all_combined_ornaments.csv
+├── requirements.txt
+├── Dockerfile
+├── README.md
+└── .env.example
 ```
 
 ## 🔧 Environment Variables
@@ -181,7 +202,7 @@ For support, please open an issue in the GitHub repository or contact the mainta
 
 ## 🔄 Updates
 
-- Latest update: Added multi-language support
+- Latest update: Refactored backend for modularity and maintainability
 - Improved model accuracy
 - Enhanced error handling
 - Added Docker support 

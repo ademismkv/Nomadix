@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ornament Analysis</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .loading {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+        .loading-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .preview-image {
+            max-width: 100%;
+            max-height: 300px;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-2xl mx-auto">
+            <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">Ornament Analysis</h1>
+            
+            <!-- Image Upload Section -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <div class="mb-6">
+                    <label for="image-upload" class="block text-sm font-medium text-gray-700 mb-2">
+                        Upload an image containing ornaments:
+                    </label>
+                    <input
+                        type="file"
+                        id="image-upload"
+                        accept="image/*"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        onchange="previewImage(event)"
+                    >
+                    <img id="image-preview" class="preview-image hidden">
+                </div>
+                
+                <button
+                    onclick="analyzeImage()"
+                    class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
+                >
+                    Analyze Image
+                </button>
+            </div>
+
+            <!-- Contribution Form -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <h2 class="text-2xl font-semibold mb-4 text-gray-800">Contribute an Ornament</h2>
+                <form id="contribution-form" class="space-y-4">
+                    <div>
+                        <label for="contribution-image" class="block text-sm font-medium text-gray-700 mb-2">
+                            Upload Ornament Image:
+                        </label>
+                        <input
+                            type="file"
+                            id="contribution-image"
+                            accept="image/*"
+                            required
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                        <div id="contribution-preview" class="mt-2 hidden">
+                            <img id="contribution-image-preview" class="max-w-full h-48 object-contain rounded-lg">
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label for="ornament-label" class="block text-sm font-medium text-gray-700 mb-2">
+                            Ornament Name:
+                        </label>
+                        <input
+                            type="text"
+                            id="ornament-label"
+                            required
+                            placeholder="Enter the name of the ornament"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                    </div>
+                    
+                    <div>
+                        <label for="ornament-description" class="block text-sm font-medium text-gray-700 mb-2">
+                            Description (Optional):
+                        </label>
+                        <textarea
+                            id="ornament-description"
+                            placeholder="Add any additional context about the ornament"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            rows="3"
+                        ></textarea>
+                    </div>
+                    
+                    <button
+                        type="submit"
+                        class="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors"
+                    >
+                        Submit Contribution
+                    </button>
+                </form>
+            </div>
+
+            <div id="result" class="mt-8 bg-white rounded-lg shadow-lg p-6 hidden">
+                <h2 class="text-2xl font-semibold mb-4 text-gray-800">Analysis Result</h2>
+                <div id="detected-ornaments" class="mb-4 hidden">
+                    <h3 class="text-lg font-medium mb-2">Detected Ornaments:</h3>
+                    <ul id="ornaments-list" class="list-disc list-inside"></ul>
+                </div>
+                <div id="resultContent" class="prose max-w-none"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="loading" class="loading">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p>Analyzing...</p>
+        </div>
+    </div>
+
+    <script>
+        function previewImage(event) {
+            const preview = document.getElementById('image-preview');
+            const file = event.target.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function() {
+                preview.src = reader.result;
+                preview.classList.remove('hidden');
+            }
+
+            if (file) {
+                reader.readAsDataURL(file);
+            }
+        }
+
+        async function analyzeImage() {
+            const fileInput = document.getElementById('image-upload');
+            const loading = document.getElementById('loading');
+            const result = document.getElementById('result');
+            const resultContent = document.getElementById('resultContent');
+            const detectedOrnaments = document.getElementById('detected-ornaments');
+            const ornamentsList = document.getElementById('ornaments-list');
+
+            if (!fileInput.files.length) {
+                alert('Please select an image');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            // Show loading
+            loading.style.display = 'block';
+            result.classList.add('hidden');
+            detectedOrnaments.classList.add('hidden');
+
+            try {
+                const response = await fetch('/analyze-image', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                // Display detected ornaments if any
+                if (data.detected_ornaments && data.detected_ornaments.length > 0) {
+                    ornamentsList.innerHTML = data.detected_ornaments
+                        .map(ornament => {
+                            const count = data.ornament_counts[ornament];
+                            return `<li>${ornament}${count > 1 ? ` (${count})` : ''}</li>`;
+                        })
+                        .join('');
+                    detectedOrnaments.classList.remove('hidden');
+                }
+                
+                // Display result
+                resultContent.innerHTML = data.response.replace(/\n/g, '<br>');
+                result.classList.remove('hidden');
+            } catch (error) {
+                alert('Error analyzing image: ' + error.message);
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        // Add contribution form handling
+        document.getElementById('contribution-image').addEventListener('change', function(e) {
+            const preview = document.getElementById('contribution-preview');
+            const previewImg = document.getElementById('contribution-image-preview');
+            const file = e.target.files[0];
+            
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewImg.src = e.target.result;
+                    preview.classList.remove('hidden');
+                }
+                reader.readAsDataURL(file);
+            } else {
+                preview.classList.add('hidden');
+            }
+        });
+
+        document.getElementById('contribution-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const submitButton = this.querySelector('button[type="submit"]');
+            const originalButtonText = submitButton.textContent;
+            submitButton.disabled = true;
+            submitButton.textContent = 'Uploading...';
+            
+            const formData = new FormData();
+            const imageFile = document.getElementById('contribution-image').files[0];
+            const label = document.getElementById('ornament-label').value;
+            const description = document.getElementById('ornament-description').value;
+            
+            if (!imageFile) {
+                alert('Please select an image');
+                submitButton.disabled = false;
+                submitButton.textContent = originalButtonText;
+                return;
+            }
+            
+            formData.append('file', imageFile);
+            formData.append('label', label);
+            if (description) {
+                formData.append('description', description);
+            }
+            
+            try {
+                const response = await fetch('/contribute', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    alert('Thank you for your contribution!');
+                    // Reset form
+                    this.reset();
+                    document.getElementById('contribution-preview').classList.add('hidden');
+                } else {
+                    alert('Error submitting contribution: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error submitting contribution: ' + error.message);
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = originalButtonText;
+            }
+        });
+    </script>
+</body>
+</html> 
