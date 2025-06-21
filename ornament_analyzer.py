@@ -230,33 +230,68 @@ def get_grok_response(prompt: str) -> str:
         print(f"Unexpected error calling Grok API: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calling Grok API: {str(e)}")
 
+# Helper function to upload to Supabase
+async def save_contribution_to_supabase(contents: bytes, label: str, description: str = None):
+    if not all([os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY')]):
+        raise HTTPException(
+            status_code=500,
+            detail="Supabase credentials not configured"
+        )
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"contributions/{timestamp}_{label.replace(' ', '_')}.jpg"
+    image_base64 = base64.b64encode(contents).decode('utf-8')
+    try:
+        storage_response = supabase.storage.from_('ornaments').upload(
+            filename,
+            contents,
+            {"content-type": "image/jpeg"}
+        )
+        public_url = supabase.storage.from_('ornaments').get_public_url(filename)
+        metadata = {
+            'filename': filename,
+            'label': label,
+            'description': description,
+            'timestamp': timestamp,
+            'url': public_url
+        }
+        db_response = supabase.table('contributions').insert(metadata).execute()
+        return metadata
+    except Exception as e:
+        print(f"Error uploading to Supabase: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error uploading contribution"
+        )
+
 @app.post("/analyze-image")
 async def analyze_image(file: UploadFile = File(...)):
     try:
         # Read image file
         contents = await file.read()
         print("Image file read successfully")
-        
         # Process image with YOLOv8
         detected_ornaments, ornament_counts, cropped_ornaments = process_image(contents)
         print(f"Detected ornaments: {detected_ornaments}")
         print(f"Ornament counts: {ornament_counts}")
-        
         if not detected_ornaments:
             return {"response": "No ornaments detected in the image."}
-        
         # Generate prompt and get Grok response
         prompt = generate_prompt(detected_ornaments)
         print(f"Generated prompt: {prompt[:100]}...")
-        
         response = get_grok_response(prompt)
         print(f"Got response from Grok API: {response[:100]}...")
-        
+        # Save to Supabase as a contribution
+        label = ', '.join([str(o) for o in detected_ornaments]) if detected_ornaments else 'Unknown'
+        description = str(response) if response is not None else ''
+        print(f"Uploading to Supabase with label: {label}")
+        print(f"Uploading to Supabase with description: {description[:100]}")
+        metadata = await save_contribution_to_supabase(contents, label, description)
         return {
             "detected_ornaments": detected_ornaments,
             "ornament_counts": ornament_counts,
             "response": response,
-            "cropped_ornaments": cropped_ornaments
+            "cropped_ornaments": cropped_ornaments,
+            "contribution": metadata
         }
     except Exception as e:
         print(f"Error in analyze_image: {str(e)}")
@@ -272,59 +307,13 @@ async def contribute_ornament(
     description: str = Form(None)
 ):
     try:
-        if not all([os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY')]):
-            raise HTTPException(
-                status_code=500,
-                detail="Supabase credentials not configured"
-            )
-
-        # Read image file
         contents = await file.read()
-        
-        # Generate a unique filename
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"contributions/{timestamp}_{label.replace(' ', '_')}.jpg"
-        
-        # Convert image to base64 for Supabase storage
-        image_base64 = base64.b64encode(contents).decode('utf-8')
-        
-        # Upload to Supabase Storage
-        try:
-            # Upload the image to Supabase Storage
-            storage_response = supabase.storage.from_('ornaments').upload(
-                filename,
-                contents,
-                {"content-type": "image/jpeg"}
-            )
-            
-            # Get the public URL
-            public_url = supabase.storage.from_('ornaments').get_public_url(filename)
-            
-            # Save metadata to Supabase Database
-            metadata = {
-                'filename': filename,
-                'label': label,
-                'description': description,
-                'timestamp': timestamp,
-                'url': public_url
-            }
-            
-            # Insert into contributions table
-            db_response = supabase.table('contributions').insert(metadata).execute()
-            
-            return {
-                "status": "success",
-                "message": "Thank you for your contribution!",
-                "contribution": metadata
-            }
-            
-        except Exception as e:
-            print(f"Error uploading to Supabase: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail="Error uploading contribution"
-            )
-            
+        metadata = await save_contribution_to_supabase(contents, label, description)
+        return {
+            "status": "success",
+            "message": "Thank you for your contribution!",
+            "contribution": metadata
+        }
     except Exception as e:
         print(f"Error in contribute_ornament: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
